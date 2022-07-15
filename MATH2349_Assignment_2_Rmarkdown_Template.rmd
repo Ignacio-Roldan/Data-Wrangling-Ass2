@@ -1,0 +1,239 @@
+---
+title: "MATH2349 Data Wrangling"
+author: "Ignacio Roldán B. s3823943"
+subtitle: Assignment 2
+output:
+  html_document:
+    df_print: paged
+  html_notebook: default
+  pdf_document: default
+---
+
+
+## Required packages 
+
+
+Provide the packages required to reproduce the report. Make sure you fulfilled the minimum requirement #10.
+
+```{r, message=FALSE}
+library(readr)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+library(knitr)
+```
+
+
+## Executive Summary 
+
+This assignment consists of the data preprocessing of public data in confirmed cases and diseases of covid-19 in Chile. The process includes:
+
+- Importing data from web.
+- Exploring data and correcting data types.
+- Tidyng data following Hadley Wickham's principles.
+- Scanning missing values.
+- Transforming cases to fit linear model.
+
+## Data 
+
+The data used for analysis consist of two data products related to the cumulated number of cases and diseases of covid-19 in Chile, published by the Ministry of Science and Technology with data from the  Ministry of Health. The two data products and URLs where to find them are given below:
+
+- **Data Product 1 (DP1): Incremental total cases per municipality** *(Covid-19.csv)*. Found in: https://github.com/MinCiencia/Datos-COVID19/tree/master/output/producto1
+- **Data Product 38 (DP38): Incremental total cases per municipality** *(CasosFallecidosPorComuna.csv)*. Found in: https://github.com/MinCiencia/Datos-COVID19/tree/master/output/producto38
+
+From these data set, only the following attributes will be considered: 
+
+* **Region (DP1, DP38)**: Name of the "Region", a government level equivalent to state.
+* **Codigo region**: Unique identifier for the region. (This attribute will not be considered because it is redundant with 'Region')
+* **Comuna**: Name of the "comuna" or municipality (This attribute will not be considered later. Data will be grouped by 'Region').
+* **Codigo comuna**: Unique identifier of the municipality.(This attribute will not be considered because it is redundant with 'Comuna')
+* **Poblacion (DP1)**: Total population of the municipality. (This attribute will be grouped by Region).
+* **[dates] (DP1)**: Total (cumulated) confirmed cases of Covid-19 at the given date reported by the Ministry of Health.
+* **[dates] (DP38)**: Total (cumulated) diseases product of Covid-19 at the given date reported by the Ministry of Health.
+* **Tasa (DP1)**: Ratio of number of confirmed cases per 10,000 population.
+
+```{r, message=FALSE}
+#Reading datasets directly from github as raw data (.csv)
+covid_confCases <- read_csv("https://raw.githubusercontent.com/MinCiencia/Datos-COVID19/master/output/producto1/Covid-19.csv")
+covid_diseases <- read_csv("https://raw.githubusercontent.com/MinCiencia/Datos-COVID19/master/output/producto38/CasosFallecidosPorComuna.csv")
+
+#Displaying first observations of the datasets
+head(covid_confCases)
+head(covid_diseases)
+
+```
+
+## Understand 
+
+Upon checking the structure of both data sets, the variables 'Region' and 'Comuna' (imported as Strings) are set as factors. The columns 2 ('Codigo region') and 4 ('Codigo comuna') are dropped as they give the same information than 'Region' and 'Comuna'. Finally the variables 'Poblacion' and 'Tasa' are renamed, translated to English. The other variables where imported correctly as numeric variables.
+
+```{r}
+#Checking structure of both datasets
+glimpse(covid_confCases)
+glimpse(covid_diseases)
+
+#Formatting data set of confirmed cases 
+covid_confCases$Region <- factor(covid_confCases$Region, levels = unique(covid_confCases$Region))
+covid_confCases$Comuna <- factor(covid_confCases$Comuna, levels = unique(covid_confCases$Comuna))
+covid_confCases <- covid_confCases[-c(2,4)]
+covid_confCases <- covid_confCases %>% rename(Population = Poblacion, Cases_Ratio = Tasa)
+
+#Formatting data set of diseases
+covid_diseases$Region <- factor(covid_diseases$Region, levels = unique(covid_diseases$Region))
+covid_diseases$Comuna <- factor(covid_diseases$Comuna, levels = unique(covid_diseases$Comuna))
+covid_diseases <- covid_diseases[-c(2,4)]
+covid_diseases <- covid_diseases %>% rename(Population = Poblacion)
+
+#Checking new structure of both datasets
+glimpse(covid_confCases)
+glimpse(covid_diseases)
+```
+
+
+##	Tidy & Manipulate Data I 
+
+The data sets are not tidy because dates, that should be a variable or attribute, are spread in several columns. The values in these columns are the number of cumulated confirmed cases or diseases depending on the data set, which are two other variables that need to be mapped into the final table as well. Further more, the key of both data frames is {Comuna, Date}, in order to merge the data sets, they need to be tidy. 
+
+To fix this problem, dates are gathered in a single column named 'Date' and the values are stored in two new variables: 'Confirmed_Cases' for the first data set of new cases, and 'Diseases' for the second data set. 
+
+With this done, now it is possible to merge the two data sets by 'Comuna' and 'Date', and setting the date variable in date format. However, another problem arises. Data of diseases is measured since a later date than new cases, this generates a large number of NA values in the diseases column prior the first date of diseases records (2020-06-12). Here an assumption is made: There is no registry of diseases caused by covid-19 prior 2020-06-12, meaning that the number of diseases in all observations before 2020-06-12 will be considered 0. This is not necessarily true, but it could be considered an approximation.
+
+Finally, the merged data set is reordered as follows: Region, Comuna, Population, Date, Confirmed_Cases, Cases_Ratio, Diseases.
+
+```{r}
+#Gather operation on both datasets
+covid_confCases <- covid_confCases %>% gather(c(4:(length(variable.names(covid_confCases))-1)), key = "Date", value = "Confirmed_Cases")
+covid_diseases <- covid_diseases %>% gather(c(4:length(variable.names(covid_diseases))), key = "Date", value = "Diseases")
+
+#merging the two datasets to a dataframe named covid
+covid <- covid_diseases %>% select(Comuna, Date, Diseases) %>% right_join(covid_confCases, by = c("Comuna", "Date"))
+
+#Setting Date variable as date type.
+covid$Date <- ymd(covid$Date)
+
+#Setting to 0 all Diseases observation prior 2020-06-12
+covid$Diseases[covid$Date < ymd(20200612)] <- 0
+
+#Reordering columns in the merged data frame
+covid <- covid %>% select(Region, Comuna, Population, Date, Confirmed_Cases, Cases_Ratio, Diseases)
+
+head(covid)
+```
+
+##	Tidy & Manipulate Data II 
+
+Due to the gather operation on the data set 1 of confirmed cases, the variable 'Cases_Ratio' now have incorrect values as they are always divided by the latest number of cases and not the correct number from the corresponding date. 'Cases_Ratio' is recalculated for every date and every municipality. At the same time, a new variable is created to calculate the same ratio for the number of Diseases per 10,000 population. These ratios are only for demonstration, they will be recalculated when aggregating the information per Region.
+
+The last part of Data manipulation will be done in the next section, corresponding to calculating the aggregated number of cases and diseases per Region. This must be done after scanning for missing values as this values may compromise the quality of the aggregated data.
+
+```{r}
+#Recalculating Cases_Ratio
+covid$Cases_Ratio <- round((covid$Confirmed_Cases/covid$Population)*10000,1)
+
+#Calculating Diseases_Ratio
+covid <- covid %>% mutate(Diseases_Ratio = round((Diseases/Population)*10000,1))
+
+head(covid)
+```
+
+
+##	Scan I 
+
+The data is scanned for missing value, finding a total of 947 cases with NA values. Upon inspection, this Na values are found to be because of a special case in the 'comuna' variable for each region, which records the number of cases in a region from an unknown municipality (labeled as "Desconocido"), this categories have a NA value for population and mostly NA instead of  0 when no unknown cases where observed.
+
+The percentage of missing values is 4.4% (less than 5%). As we are only interested in aggregated results by Region, the missing values are simply ignored upon computing  the final data set. Cases and Diseases ratios are recalculated to consider region population.
+
+Finally, a simple rule for the data is checked: All observations of cases and diseases must be greater or equal than the previous record in the same Region, because they are incremental. All diseases are correct but some records of cases have problems. For these cases, the incorrect values are replaced by the previous record. 
+
+```{r, message=FALSE}
+# Calculating number of missing values or special characters per variable
+knitr::kable(sapply(covid, function(x) {sum(is.na(x))}), col.names = "NA Count")
+
+# Calculating number of special values per variable
+sapply(covid,function(x){
+  if (is.numeric(x)) sum(is.infinite(x) | is.nan(x))
+  else NA
+}) -> tbl2
+knitr::kable(tbl2, col.names = "Special Values Count")
+
+
+# Calculating % of missing values (< 5%)
+(nrow(covid) - sum(complete.cases(covid)))/nrow(covid) * 100
+
+# Aggregating results by region
+covid_region <- covid %>% group_by(Region, Date) %>% 
+  summarise(Cases = sum(Confirmed_Cases, na.rm = TRUE),
+            Cases_Ratio = (sum(Confirmed_Cases, na.rm = TRUE)/sum(Population, na.rm = TRUE))*10000,
+            Diseases = sum(Diseases, na.rm = TRUE),
+            Diseases_Ratio = (sum(Diseases, na.rm = TRUE)/sum(Population, na.rm = TRUE))*10000)
+head(covid_region)
+# Checking no missing values in new table
+knitr::kable(sapply(covid_region, function(x) {sum(is.na(x))}), col.names = "NA Count")
+
+
+# Looking for obvious errors (values of cases or diseases that are lower than the previous observation, this could not be possible as they are aggregated)
+# Incorrect values in cases
+covid_region %>% filter( Cases < lag(Cases) )
+# Incorrect values in Diseases
+covid_region %>% filter( Diseases < lag(Diseases) )
+
+#Replacing incorrect values of cases by the previous one.
+for( i in 2:dim(covid_region)[1] ){
+  if( covid_region[i,'Region'] == covid_region[i-1,'Region'] & covid_region[i,'Cases'] <  covid_region[i-1,'Cases'] ) {
+    covid_region[i,'Cases'] <-  covid_region[i-1,'Cases']
+    covid_region[i,'Cases_Ratio'] <-  covid_region[i-1,'Cases_Ratio']
+  }
+}
+```
+
+##	Scan II
+
+The analysed data corresponds to a non-linear time series. The variance of the quantitative variables are partially explained by time, hence normal statistical methods to find outliers won't apply. After a visual inspection for outliers, trends appear to be normal. Some observations have a drastic change of trend but they are consistent with the rest of the data.
+
+*As time series escape the scope of this assignment, no other methods will be considered to identify outliers.
+
+```{r, fig.align='center'}
+#Confirmed cases per Region
+covid_region %>%
+  ggplot(aes(x = Date, y = Cases_Ratio, colour = Region)) +
+  geom_point() +
+  facet_wrap(~ Region) +
+  theme(legend.position = "none")
+
+#Diseases per Region
+covid_region %>%
+  ggplot(aes(x = Date, y = Diseases_Ratio, colour = Region)) +
+  geom_point() +
+  facet_wrap(~ Region) +
+  theme(legend.position = "none")
+```
+
+
+##	Transform 
+
+A transformation  is made to the 'Cases' variable in order to approximate it to a linear model. The objective of this transformation is to increase the R-squared coefficient of determination to better fit a linear model Cases ~ Date. The approximation was by computing different roots that increased the R-squared. The fifth root was choose to be the best transformation increasing the R-squared from 0.489 to 0.708.  
+
+```{r, fig.align='center'}
+#normal case
+covid_region %>%
+  ggplot(aes(x = Date, y = Cases_Ratio, colour = Region)) +
+  geom_point()
+
+#R-squared normal case
+linmod1 <- lm( Cases_Ratio ~ Date ,data = covid_region)
+summary(linmod1)$r.squared
+
+#fifth root transformation
+covid_region %>%
+  ggplot(aes(x = Date, y = (Cases_Ratio)^(1/5), colour = Region)) +
+  geom_point()
+
+#R-squared transformation
+linmod2 <- lm( (Cases_Ratio)^(1/5) ~ Date ,data = covid_region)
+summary(linmod2)$r.squared
+```
+
+
+<br>
+<br>
